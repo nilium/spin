@@ -35,6 +35,7 @@ type ColorizeUi struct {
 	ErrorColor   string
 	WarnColor    string
 	Ui           cli.Ui
+	Logging      cli.Ui
 	Quiet        bool
 	OutputFormat *output.OutputFormat
 }
@@ -51,6 +52,10 @@ func InitUI(quiet, color bool, outputFormat string) {
 		InfoColor:  "[blue]",
 		Ui: &cli.BasicUi{
 			Writer:      os.Stdout,
+			ErrorWriter: os.Stdout,
+		},
+		Logging: &cli.BasicUi{
+			Writer:      os.Stderr,
 			ErrorWriter: os.Stderr,
 		},
 		Quiet: quiet,
@@ -139,17 +144,17 @@ func (u *ColorizeUi) parseJsonPath(input interface{}, template string) (interfac
 
 func (u *ColorizeUi) Info(message string) {
 	if !u.Quiet {
-		u.Ui.Info(u.colorize(message, u.InfoColor))
+		u.Logging.Info(u.colorize(message, u.InfoColor))
 	}
 }
 
 func (u *ColorizeUi) Error(message string) {
-	u.Ui.Error(u.colorize(message, u.ErrorColor))
+	u.Logging.Error(u.colorize(message, u.ErrorColor))
 }
 
 func (u *ColorizeUi) Warn(message string) {
 	if !u.Quiet {
-		u.Ui.Warn(u.colorize(message, u.WarnColor))
+		u.Logging.Warn(u.colorize(message, u.WarnColor))
 	}
 }
 
