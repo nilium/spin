@@ -46,6 +46,7 @@ import (
 
 	gate "github.com/spinnaker/spin/gateapi"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 // GatewayClient is the wrapper with authentication
@@ -120,6 +121,12 @@ func NewGateClient(flags *pflag.FlagSet) (*GatewayClient, error) {
 	err = gateClient.authenticateOAuth2()
 	if err != nil {
 		util.UI.Error("OAuth2 Authentication failed.")
+		return nil, err
+	}
+
+	err = gateClient.authenticateGoogleServiceAccount()
+	if err != nil {
+		util.UI.Error(fmt.Sprintf("Google service account authentication failed: %v", err))
 		return nil, err
 	}
 
@@ -351,9 +358,9 @@ func (m *GatewayClient) authenticateOAuth2() error {
 
 		util.UI.Info("Caching oauth2 token.")
 		OAuth2.CachedToken = newToken
-		buf, _ := yaml.Marshal(&m.Config)
-		info, _ := os.Stat(m.configLocation)
-		ioutil.WriteFile(m.configLocation, buf, info.Mode())
+		if err = writeYAML(&m.Config, m.configLocation, 0600); err != nil {
+			util.UI.Warn(fmt.Sprintf("Error caching oauth2 token: %v", err))
+		}
 
 		m.login(newToken.AccessToken)
 		m.Context = context.Background()
@@ -368,6 +375,53 @@ func (m *GatewayClient) authenticateIAP() (string, error) {
 	return token, err
 }
 
+func (m *GatewayClient) authenticateGoogleServiceAccount() (err error) {
+	auth := m.Config.Auth
+	gsa := auth.GoogleServiceAccount
+
+	if !gsa.IsValid() {
+		return nil
+	}
+
+	if gsa.CachedToken != nil && gsa.CachedToken.Valid() {
+		return m.login(gsa.CachedToken.AccessToken)
+	}
+	gsa.CachedToken = nil
+
+	var source oauth2.TokenSource
+	if gsa.File == "" {
+		source, err = google.DefaultTokenSource(context.Background(), "profile", "email")
+	} else {
+		p, ferr := ioutil.ReadFile(gsa.File)
+		if ferr != nil {
+			return err
+		}
+		source, err = google.JWTAccessTokenSourceFromJSON(p, "https://accounts.google.com/o/oauth2/v2/auth")
+	}
+	if err != nil {
+		return err
+	}
+
+	token, err := source.Token()
+	if err != nil {
+		return err
+	}
+
+	gsa.CachedToken = token
+	if err := m.login(token.AccessToken); err != nil {
+		return err
+	}
+	m.Context = context.Background()
+
+	// Cache token if login succeeded
+	gsa.CachedToken = token
+	if err = writeYAML(&m.Config, m.configLocation, 0600); err != nil {
+		util.UI.Warn(fmt.Sprintf("Error caching oauth2 token: %v", err))
+	}
+
+	return nil
+}
+
 func (m *GatewayClient) login(accessToken string) error {
 	loginReq, err := http.NewRequest("GET", m.GateEndpoint()+"/login", nil)
 	if err != nil {
@@ -376,6 +430,25 @@ func (m *GatewayClient) login(accessToken string) error {
 	loginReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 	m.httpClient.Do(loginReq) // Login to establish session.
 	return nil
+}
+
+func writeYAML(v interface{}, dest string, defaultMode os.FileMode) error {
+	// Write config with cached token
+	buf, err := yaml.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	mode := defaultMode
+	info, err := os.Stat(dest)
+	if err != nil && !os.IsNotExist(err) {
+		return nil
+	} else {
+		// Preserve existing file mode
+		mode = info.Mode()
+	}
+
+	return ioutil.WriteFile(dest, buf, mode)
 }
 
 // generateCodeVerifier generates an OAuth2 code verifier
